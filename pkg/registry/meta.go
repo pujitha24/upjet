@@ -36,6 +36,11 @@ const (
 var (
 	regexConfigurationBlock = regexp.MustCompile(`block.*(support)?`)
 	regexHeaderNode         = regexp.MustCompile(`h\d`)
+	// regexIdentifier matches a valid Terraform attribute name. It's used to
+	// tell an attribute's nested block documentation apart from a bulleted
+	// list of the attribute's accepted values (e.g., `"gvisor"`), which is
+	// structurally indistinguishable from a nested block's argument list.
+	regexIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 )
 
 // NewProviderMetadata initializes a new ProviderMetadata for
@@ -276,6 +281,73 @@ func (r *Resource) scrapeFieldDocs(doc *html.Node, fieldXPath string) {
 	}
 }
 
+// getRootFromParentLi handles the case where the given <ul> is a sub-list
+// nested directly inside a parent <li>, e.g., a bulleted list documenting
+// the arguments of a nested block that's itself documented as a bullet.
+// In this case, the parent <li>'s own attribute name is the root of the
+// nested list.
+func (r *Resource) getRootFromParentLi(ulNode *html.Node) (string, bool) {
+	if ulNode.Parent == nil || ulNode.Parent.Data != "li" {
+		return "", false
+	}
+	// A nested <ul> doesn't always document a nested block's arguments: it's
+	// also used to enumerate an attribute's accepted (quoted, literal)
+	// values, e.g., `"gvisor"`, which is structurally indistinguishable from
+	// a nested block's argument list. Only treat the nested list as
+	// documenting a nested block if all of its items are named with valid
+	// Terraform identifiers.
+	if !hasIdentifierListItems(ulNode) {
+		return "", false
+	}
+	codeNode := findFirstChildCode(ulNode.Parent)
+	if codeNode == nil || codeNode.FirstChild == nil {
+		return "", false
+	}
+	name := codeNode.FirstChild.Data
+	if root := r.getRootPath(codeNode.FirstChild); len(root) != 0 {
+		return fmt.Sprintf("%s.%s", root, name), true
+	}
+	return name, true
+}
+
+// hasIdentifierListItems reports whether every top-level <li> in the given
+// <ul> is headed by a <code> element naming a valid Terraform identifier.
+// This is a heuristic: it catches quoted-literal enumerations like
+// `"gvisor"`, but a bare-word enumeration of accepted values (e.g., `standard`
+// as a value for an attribute named `type`) is indistinguishable from a
+// nested block's argument list using this check alone.
+func hasIdentifierListItems(ulNode *html.Node) bool {
+	for li := ulNode.FirstChild; li != nil; li = li.NextSibling {
+		if li.Data != "li" {
+			continue
+		}
+		codeNode := findFirstChildCode(li)
+		if codeNode == nil || codeNode.FirstChild == nil || !regexIdentifier.MatchString(codeNode.FirstChild.Data) {
+			return false
+		}
+	}
+	return true
+}
+
+// findFirstChildCode returns the first <code> element among n's children,
+// descending into an optional wrapping <p>. Goldmark wraps the inline
+// content of a list item in a <p> when the item is part of a "loose" list
+// (i.e., any item in the list is separated from its sibling by a blank
+// line), so the leading <code> element isn't always a direct child.
+func findFirstChildCode(n *html.Node) *html.Node {
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		switch c.Data {
+		case "code":
+			return c
+		case "p":
+			if codeNode := findFirstChildCode(c); codeNode != nil {
+				return codeNode
+			}
+		}
+	}
+	return nil
+}
+
 // getRootPath extracts the root attribute name for the specified HTML node n,
 // from the preceding paragraph or header HTML nodes.
 func (r *Resource) getRootPath(n *html.Node) string {
@@ -284,6 +356,9 @@ func (r *Resource) getRootPath(n *html.Node) string {
 	}
 	if ulNode == nil {
 		return ""
+	}
+	if root, ok := r.getRootFromParentLi(ulNode); ok {
+		return root
 	}
 	for pNode = ulNode.PrevSibling; pNode != nil && (pNode.Data != "p" || !regexConfigurationBlock.MatchString(strings.ToLower(extractText(pNode)))); pNode = pNode.PrevSibling {
 		// if it's an HTML header node

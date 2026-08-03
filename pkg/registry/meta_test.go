@@ -5,13 +5,16 @@
 package registry
 
 import (
+	"bytes"
 	"os"
 	"testing"
 
+	"github.com/antchfx/htmlquery"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
 	xptest "github.com/crossplane/crossplane-runtime/v2/pkg/test"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/yuin/goldmark"
 	"gopkg.in/yaml.v3"
 )
 
@@ -119,6 +122,98 @@ func TestScrapeRepo(t *testing.T) {
 			}
 			if diff := cmp.Diff(&pmExpected, pm, cmpopts.IgnoreUnexported(fieldpath.Paved{})); diff != "" {
 				t.Errorf("\n%s\nScrapeRepo(ProviderConfig): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestScrapeFieldDocsNestedArgument(t *testing.T) {
+	// In all cases below, a top-level argument and a nested block argument
+	// share the same name ("my_variable") but have different descriptions.
+	// The nested list is documented as a sub-bullet of its parent argument,
+	// which is the common convention used across Terraform provider docs.
+	cases := map[string]struct {
+		reason   string
+		markdown string
+		want     map[string]string
+	}{
+		"TightList": {
+			reason: "A nested sub-bullet list directly under a tightly-packed (no blank lines) parent list must be scoped under the parent argument's name.",
+			markdown: `## Argument Reference
+
+- ` + "`my_variable`" + ` - Description A.
+- ` + "`my_list`" + ` - List of nested configs.
+  - ` + "`my_variable`" + ` - Description B.
+`,
+			want: map[string]string{
+				"my_variable":         "- Description A.",
+				"my_list":             "- List of nested configs.",
+				"my_list.my_variable": "- Description B.",
+			},
+		},
+		"LooseList": {
+			reason: "Goldmark renders every item of a top-level list as \"loose\" (wrapping each item's content in a <p>) if any sibling item is separated by a blank line; the nested sub-bullet list must still be scoped under the parent argument's name.",
+			markdown: `## Argument Reference
+
+- ` + "`my_variable`" + ` - Description A.
+
+- ` + "`my_list`" + ` - List of nested configs.
+  - ` + "`my_variable`" + ` - Description B.
+`,
+			want: map[string]string{
+				"my_variable":         "- Description A.",
+				"my_list":             "- List of nested configs.",
+				"my_list.my_variable": "- Description B.",
+			},
+		},
+		"MultiLevelNesting": {
+			reason: "A doubly-nested sub-bullet list must be scoped under the full dotted path of its ancestor arguments.",
+			markdown: `## Argument Reference
+
+- ` + "`my_variable`" + ` - Description A.
+- ` + "`my_list`" + ` - List of nested configs.
+  - ` + "`nested_list`" + ` - List of doubly-nested configs.
+    - ` + "`my_variable`" + ` - Description C.
+`,
+			want: map[string]string{
+				"my_variable":                     "- Description A.",
+				"my_list":                         "- List of nested configs.",
+				"my_list.nested_list":             "- List of doubly-nested configs.",
+				"my_list.nested_list.my_variable": "- Description C.",
+			},
+		},
+		"AcceptedValuesList": {
+			reason: "A sub-bullet list enumerating an attribute's accepted values (a quoted literal, not a valid attribute identifier) is structurally identical to a nested block's argument list, but must not be scoped under the parent argument's name.",
+			markdown: `## Argument Reference
+
+- ` + "`sandbox_type`" + ` (Required) Which sandbox to use for pods in the node pool.
+    Accepted values are:
+
+    - ` + "`\"gvisor\"`" + `: Pods run within a gVisor sandbox.
+`,
+			want: map[string]string{
+				"sandbox_type": "(Required) Which sandbox to use for pods in the node pool.\nAccepted values are:",
+				`"gvisor"`:     ": Pods run within a gVisor sandbox.",
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var buff bytes.Buffer
+			if err := goldmark.Convert([]byte(tc.markdown), &buff); err != nil {
+				t.Fatalf("failed to convert markdown: %v", err)
+			}
+			doc, err := htmlquery.Parse(&buff)
+			if err != nil {
+				t.Fatalf("failed to parse HTML: %v", err)
+			}
+
+			r := &Resource{}
+			r.scrapeFieldDocs(doc, `//ul/li//code[1]/text()`)
+
+			if diff := cmp.Diff(tc.want, r.ArgumentDocs); diff != "" {
+				t.Errorf("\n%s\nscrapeFieldDocs(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

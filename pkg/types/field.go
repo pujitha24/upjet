@@ -289,13 +289,7 @@ func NewSensitiveField(g *Builder, cfg *config.Resource, r *resource, sch *schem
 		return nil, true, nil
 	}
 	sfx := "SecretRef"
-	switch f.FieldType.(type) {
-	case *types.Slice:
-		f.CRDPaths[len(f.CRDPaths)-2] = f.CRDPaths[len(f.CRDPaths)-2] + sfx
-		cfg.Sensitive.AddFieldPath(traverser.FieldPathWithWildcard(f.TerraformPaths), traverser.FieldPathWithWildcard(f.CRDPaths))
-	default:
-		cfg.Sensitive.AddFieldPath(traverser.FieldPathWithWildcard(f.TerraformPaths), traverser.FieldPathWithWildcard(f.CRDPaths)+sfx)
-	}
+	_, isSlice := f.FieldType.(*types.Slice)
 	// todo(turkenh): do we need to support other field types as sensitive?
 	if f.FieldType.String() != "string" && f.FieldType.String() != "*string" && f.FieldType.String() != "[]string" &&
 		f.FieldType.String() != "[]*string" && f.FieldType.String() != "map[string]string" && f.FieldType.String() != "map[string]*string" {
@@ -331,6 +325,15 @@ func NewSensitiveField(g *Builder, cfg *config.Resource, r *resource, sch *schem
 	}
 	f.TransformedName = name.NewFromCamel(f.FieldNameCamel).LowerCamelComputed
 	f.JSONTag = structtag.NewJSON(structtag.WithName(f.TransformedName))
+	// Use the same computed name as the JSON tag when registering the
+	// connection details field path, so that the path stays in sync with
+	// the actual field name in the generated struct.
+	if isSlice {
+		f.CRDPaths[len(f.CRDPaths)-2] = f.TransformedName
+	} else {
+		f.CRDPaths[len(f.CRDPaths)-1] = f.TransformedName
+	}
+	cfg.Sensitive.AddFieldPath(traverser.FieldPathWithWildcard(f.TerraformPaths), traverser.FieldPathWithWildcard(f.CRDPaths))
 	if f.Schema.Optional {
 		f.FieldType = types.NewPointer(f.FieldType)
 		f.JSONTag.SetOmit(structtag.OmitEmpty)

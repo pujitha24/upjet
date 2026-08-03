@@ -308,11 +308,12 @@ func TestBuild(t *testing.T) {
 		setupFunc func(*config.Resource)
 	}
 	type want struct {
-		forProvider     string
-		atProvider      string
-		validationRules string
-		err             error
-		commentChecks   map[string]func(t *testing.T, comments map[string]string)
+		forProvider         string
+		atProvider          string
+		validationRules     string
+		err                 error
+		commentChecks       map[string]func(t *testing.T, comments map[string]string)
+		sensitiveFieldPaths map[string]string
 	}
 	cases := map[string]struct {
 		args
@@ -425,6 +426,33 @@ func TestBuild(t *testing.T) {
 				validationRules: `
 // +kubebuilder:validation:XValidation:rule="!('*' in self.managementPolicies || 'Create' in self.managementPolicies || 'Update' in self.managementPolicies) || has(self.forProvider.key2SecretRef)",message="spec.forProvider.key2SecretRef is a required parameter"
 // +kubebuilder:validation:XValidation:rule="!('*' in self.managementPolicies || 'Create' in self.managementPolicies || 'Update' in self.managementPolicies) || has(self.forProvider.key3SecretRef)",message="spec.forProvider.key3SecretRef is a required parameter"`,
+			},
+		},
+		"Sensitive_Fields_Adjacent_Acronyms": {
+			// Regression test for https://github.com/crossplane/upjet/issues/508:
+			// when two known acronyms are adjacent in the Terraform field name
+			// (e.g. "gcp" and "json"), the connection details field path must
+			// use the same computed field name as the actual JSON tag.
+			args: args{
+				crdScope: CRDScopeCluster,
+				cfg: &config.Resource{
+					TerraformResource: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"gcp_json_credentials": {
+								Type:      schema.TypeString,
+								Optional:  true,
+								Sensitive: true,
+							},
+						},
+					},
+				},
+			},
+			want: want{
+				forProvider: `type example.Parameters struct{GCPJSONCredentialsSecretRef *github.com/crossplane/crossplane/apis/v2/core/v2.SecretKeySelector "json:\"gcpjsonCredentialsSecretRef,omitempty\" tf:\"-\""}`,
+				atProvider:  `type example.Observation struct{}`,
+				sensitiveFieldPaths: map[string]string{
+					"gcp_json_credentials": "gcpjsonCredentialsSecretRef",
+				},
 			},
 		},
 		"Invalid_Sensitive_Fields": {
@@ -864,6 +892,11 @@ func TestBuild(t *testing.T) {
 			}
 			if diff := cmp.Diff(tc.want.validationRules, g.ValidationRules); diff != "" {
 				t.Fatalf("Build(...): -want validationRules, +got validationRules: %s", diff)
+			}
+			if tc.want.sensitiveFieldPaths != nil {
+				if diff := cmp.Diff(tc.want.sensitiveFieldPaths, tc.args.cfg.Sensitive.GetFieldPaths()); diff != "" {
+					t.Fatalf("Build(...): -want sensitiveFieldPaths, +got sensitiveFieldPaths: %s", diff)
+				}
 			}
 			for checkName, checkFn := range tc.want.commentChecks {
 				t.Run(checkName, func(t *testing.T) {

@@ -488,6 +488,73 @@ func TestObserve(t *testing.T) {
 				condition: available(),
 			},
 		},
+		"ObserveOnlyAnnotationsUpdatedManually": {
+			reason: "We should update critical annotations manually when importing since the observe-only path never late-initializes the spec to persist them",
+			args: args{
+				client: &test.MockClient{
+					MockUpdate: func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+						if diff := cmp.Diff(exampleCriticalAnnotations, obj.GetAnnotations()); diff != "" {
+							reason := "Critical annotations should be updated"
+							t.Errorf("\nReason: %s\n-want, +got:\n%s", reason, diff)
+						}
+						return nil
+					},
+				},
+				obj: &fake.Terraformed{
+					Managed: xpfake.Managed{
+						Manageable: xpfake.Manageable{
+							Policy: xpv2.ManagementPolicies{xpv2.ManagementActionObserve},
+						},
+						ConditionedStatus: xpv2.ConditionedStatus{
+							// empty
+						},
+					},
+				},
+				w: WorkspaceFns{
+					ImportFn: func(ctx context.Context, tr resource.Terraformed) (terraform.ImportResult, error) {
+						return terraform.ImportResult{
+							Exists: true,
+							State:  exampleState,
+						}, nil
+					},
+				},
+			},
+			want: want{
+				obs: managed.ExternalObservation{
+					ResourceExists:   true,
+					ResourceUpToDate: true,
+				},
+				condition: available(),
+			},
+		},
+		"ObserveOnlyAnnotationsUpdatedManuallyError": {
+			reason: "Should handle the error of updating critical annotations manually when importing",
+			args: args{
+				client: &test.MockClient{
+					MockUpdate: func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+						return errBoom
+					},
+				},
+				obj: &fake.Terraformed{
+					Managed: xpfake.Managed{
+						Manageable: xpfake.Manageable{
+							Policy: xpv2.ManagementPolicies{xpv2.ManagementActionObserve},
+						},
+					},
+				},
+				w: WorkspaceFns{
+					ImportFn: func(ctx context.Context, tr resource.Terraformed) (terraform.ImportResult, error) {
+						return terraform.ImportResult{
+							Exists: true,
+							State:  exampleState,
+						}, nil
+					},
+				},
+			},
+			want: want{
+				err: errors.Wrap(errBoom, errUpdateAnnotations),
+			},
+		},
 		"TransitionToReadyManagementPolicyDefault": {
 			reason: "We should mark the resource as ready if the refresh succeeds and there is no ongoing operation",
 			args: args{

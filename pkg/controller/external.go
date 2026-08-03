@@ -480,6 +480,22 @@ func (e *external) Disconnect(_ context.Context) error {
 	return nil
 }
 
+// persistCriticalAnnotations sets the critical annotations (e.g., the
+// external-name) on tr and, if they have changed, persists them immediately
+// via a Kubernetes API update.
+func (e *external) persistCriticalAnnotations(ctx context.Context, tr resource.Terraformed, tfstate map[string]any, privateRaw string) error {
+	annotationsUpdated, err := resource.SetCriticalAnnotations(tr, e.config, tfstate, privateRaw)
+	if err != nil {
+		return errors.Wrap(err, "cannot set critical annotations")
+	}
+	if annotationsUpdated {
+		if err := e.kube.Update(ctx, tr); err != nil {
+			return errors.Wrap(err, errUpdateAnnotations)
+		}
+	}
+	return nil
+}
+
 func (e *external) Import(ctx context.Context, tr resource.Terraformed) (managed.ExternalObservation, error) {
 	res, err := e.workspace.Import(ctx, tr)
 	if err != nil {
@@ -512,6 +528,15 @@ func (e *external) Import(ctx context.Context, tr resource.Terraformed) (managed
 	tfstate := map[string]any{}
 	if err := json.JSParser.Unmarshal(res.State.GetAttributes(), &tfstate); err != nil {
 		return managed.ExternalObservation{}, errors.Wrap(err, "cannot unmarshal state attributes")
+	}
+
+	// The Import path is only taken when the management policies do not
+	// contain Create or Update (see the call site in Observe), so unlike the
+	// regular Observe flow, we cannot rely on a late-initialization spec
+	// update to eventually persist critical annotations such as the
+	// external-name. We therefore update them here directly if they changed.
+	if err := e.persistCriticalAnnotations(ctx, tr, tfstate, string(res.State.GetPrivateRaw())); err != nil {
+		return managed.ExternalObservation{}, err
 	}
 
 	conn, err := resource.GetConnectionDetails(tfstate, tr, e.config)

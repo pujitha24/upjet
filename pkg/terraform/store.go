@@ -5,8 +5,10 @@
 package terraform
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -339,11 +341,45 @@ func (ws *WorkspaceStore) initMetrics() {
 
 func (ts Setup) filterSensitiveInformation(s string) string {
 	for _, v := range ts.Configuration {
-		if str, ok := v.(string); ok && str != "" {
-			s = strings.ReplaceAll(s, str, "REDACTED")
+		str, ok := v.(string)
+		if !ok || str == "" {
+			continue
 		}
+		s = strings.ReplaceAll(s, str, "REDACTED")
+		// A sensitive value written to main.tf.json goes through a level
+		// of JSON encoding (upjet's writer does not HTML-escape), and
+		// when Terraform is run with -json, its diagnostic output (the
+		// raw subprocess output filtered here) embeds main.tf.json's
+		// content as a JSON string once more, this time HTML-escaped
+		// (Terraform's JSON UI logger, hclog, HTML-escapes by default).
+		// So a multiline value (e.g. a PEM key) never appears verbatim in
+		// the raw output: also redact its once- and twice-JSON-encoded
+		// forms.
+		once, err := jsonEncodedString(str, false)
+		if err != nil {
+			continue
+		}
+		s = strings.ReplaceAll(s, once, "REDACTED")
+		twice, err := jsonEncodedString(once, true)
+		if err != nil {
+			continue
+		}
+		s = strings.ReplaceAll(s, twice, "REDACTED")
 	}
 	return s
+}
+
+// jsonEncodedString returns the JSON string encoding of s, with the
+// surrounding quotes stripped.
+func jsonEncodedString(s string, escapeHTML bool) (string, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(escapeHTML)
+	if err := enc.Encode(s); err != nil {
+		return "", err
+	}
+	b := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
+	return string(b[1 : len(b)-1]), nil
 }
 
 func (ws *WorkspaceStore) reportTFProcesses(interval time.Duration) {

@@ -22,8 +22,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/crossplane/upjet/v2/pkg/config"
+	"github.com/crossplane/upjet/v2/pkg/resource"
 	"github.com/crossplane/upjet/v2/pkg/resource/fake"
 	"github.com/crossplane/upjet/v2/pkg/terraform"
+	tferrors "github.com/crossplane/upjet/v2/pkg/terraform/errors"
 )
 
 var (
@@ -279,6 +281,36 @@ func TestTerraformPluginSDKObserve(t *testing.T) {
 				t.Errorf("\n%s\nConnect(...): -want error, +got error:\n", diff)
 			}
 		})
+	}
+}
+
+// TestTerraformPluginSDKObserveClearsStaleLastAsyncOperation is a regression
+// test verifying that a stale LastAsyncOperation failure condition, left
+// behind by a previous async operation, is cleared once the resource is
+// observed to be up to date. Without this, a resource whose provider was
+// reconfigured from async to sync mode would keep reporting a failed
+// LastAsyncOperation condition forever, since the synchronous Observe path
+// never revisits it.
+func TestTerraformPluginSDKObserveClearsStaleLastAsyncOperation(t *testing.T) {
+	tr := obj
+	tr.SetConditions(resource.LastAsyncOperationCondition(tferrors.NewAsyncCreateFailed(errors.New("boom"))))
+
+	terraformPluginSDKExternal := prepareTerraformPluginSDKExternal(mockResource{
+		RefreshWithoutUpgradeFn: func(ctx context.Context, s *tf.InstanceState, meta interface{}) (*tf.InstanceState, diag.Diagnostics) {
+			return &tf.InstanceState{ID: "example-id", Attributes: map[string]string{"name": "example"}}, nil
+		},
+	}, cfg)
+	if _, err := terraformPluginSDKExternal.Observe(t.Context(), &tr); err != nil {
+		t.Fatalf("Observe(...): unexpected error: %v", err)
+	}
+
+	got := tr.GetCondition(resource.TypeLastAsyncOperation)
+	want := resource.LastAsyncOperationCondition(nil)
+	if diff := cmp.Diff(want.Status, got.Status); diff != "" {
+		t.Errorf("\n%s\nGetCondition(LastAsyncOperation): -want status, +got status:\n", diff)
+	}
+	if diff := cmp.Diff(want.Reason, got.Reason); diff != "" {
+		t.Errorf("\n%s\nGetCondition(LastAsyncOperation): -want reason, +got reason:\n", diff)
 	}
 }
 

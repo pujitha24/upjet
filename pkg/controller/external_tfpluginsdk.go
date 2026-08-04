@@ -611,6 +611,15 @@ func (n *terraformPluginSDKExternal) Observe(ctx context.Context, mg xpresource.
 
 		if !hasDiff {
 			n.metricRecorder.SetReconcileTime(metrics.NameForManaged(mg))
+			// A previously reported LastAsyncOperation condition (e.g. from an
+			// earlier async create/update/delete failure) may otherwise remain
+			// on the resource forever once the provider is reconfigured to run
+			// synchronously, since the synchronous path never revisits it. Now
+			// that we know the resource is up to date and not pending deletion,
+			// clear any such stale condition.
+			if !meta.WasDeleted(mg) {
+				mg.SetConditions(resource.LastAsyncOperationCondition(nil))
+			}
 		}
 		if !specUpdateRequired {
 			resource.SetUpToDateCondition(mg, !hasDiff)

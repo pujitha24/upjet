@@ -121,6 +121,34 @@ func TestAsyncTerraformPluginSDKConnect(t *testing.T) {
 	}
 }
 
+// TestAsyncTerraformPluginSDKConnectDetachesSetupContext ensures that the
+// context passed to the configured terraform.SetupFn is not canceled
+// together with the reconciliation context that established it. The
+// resulting terraform.Setup is cached and reused by the async Create,
+// Update and Delete operations, which run in goroutines well beyond the
+// lifetime of the reconciliation request that called Connect. A provider
+// implementation that stores this context (as terraform-provider-google
+// does) and later relies on it in those goroutines would otherwise observe
+// it as done shortly after Connect returns.
+func TestAsyncTerraformPluginSDKConnectDetachesSetupContext(t *testing.T) {
+	var captured context.Context
+	setupFn := func(ctx context.Context, _ client.Client, _ xpresource.Managed) (terraform.Setup, error) {
+		captured = ctx
+		return terraform.Setup{}, nil
+	}
+	c := NewTerraformPluginSDKAsyncConnector(nil, ots, setupFn, cfgAsync, WithTerraformPluginSDKAsyncLogger(logTest))
+	ctx, cancel := context.WithCancel(t.Context())
+	if _, err := c.Connect(ctx, newObjAsync()); err != nil {
+		t.Fatalf("Connect(...): unexpected error: %v", err)
+	}
+	cancel()
+	select {
+	case <-captured.Done():
+		t.Errorf("context supplied to the SetupFn was canceled when the reconciliation context was canceled")
+	default:
+	}
+}
+
 func TestAsyncTerraformPluginSDKObserve(t *testing.T) {
 	type args struct {
 		r   Resource

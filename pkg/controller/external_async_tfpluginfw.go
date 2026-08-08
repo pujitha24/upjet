@@ -48,6 +48,7 @@ func NewTerraformPluginFrameworkAsyncConnector(kube client.Client,
 	nfac := &TerraformPluginFrameworkAsyncConnector{
 		TerraformPluginFrameworkConnector: NewTerraformPluginFrameworkConnector(kube, sf, cfg, ots),
 	}
+	nfac.detachSetupContext = true
 	for _, f := range opts {
 		f(nfac)
 	}

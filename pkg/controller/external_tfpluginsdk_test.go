@@ -176,6 +176,29 @@ func TestTerraformPluginSDKConnect(t *testing.T) {
 	}
 }
 
+// TestTerraformPluginSDKConnectPropagatesSetupContext ensures the
+// synchronous connector keeps passing the reconciliation context as is to
+// the configured terraform.SetupFn, since it has no async operations that
+// would reuse the resulting terraform.Setup beyond that context's lifetime.
+func TestTerraformPluginSDKConnectPropagatesSetupContext(t *testing.T) {
+	var captured context.Context
+	setupFn := func(ctx context.Context, _ client.Client, _ xpresource.Managed) (terraform.Setup, error) {
+		captured = ctx
+		return terraform.Setup{}, nil
+	}
+	c := NewTerraformPluginSDKConnector(nil, setupFn, cfg, ots, WithTerraformPluginSDKLogger(logTest))
+	ctx, cancel := context.WithCancel(t.Context())
+	if _, err := c.Connect(ctx, &obj); err != nil {
+		t.Fatalf("Connect(...): unexpected error: %v", err)
+	}
+	cancel()
+	select {
+	case <-captured.Done():
+	default:
+		t.Errorf("context supplied to the SetupFn was expected to be the reconciliation context, but was not canceled with it")
+	}
+}
+
 func TestTerraformPluginSDKObserve(t *testing.T) {
 	type args struct {
 		r   Resource

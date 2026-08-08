@@ -40,6 +40,13 @@ type TerraformPluginSDKConnector struct {
 	metricRecorder              *metrics.MetricRecorder
 	operationTrackerStore       *OperationTrackerStore
 	isManagementPoliciesEnabled bool
+	// detachSetupContext controls whether the context supplied to
+	// getTerraformSetup is detached from the parent context's cancellation
+	// and deadline. Async connectors reuse the resulting terraform.Setup in
+	// goroutines that outlive the reconciliation request that established
+	// it, so its setup context must not be canceled together with that
+	// request's context.
+	detachSetupContext bool
 }
 
 // TerraformPluginSDKOption allows you to configure TerraformPluginSDKConnector.
@@ -246,8 +253,12 @@ func (c *TerraformPluginSDKConnector) Connect(ctx context.Context, mg xpresource
 	c.metricRecorder.ObserveReconcileDelay(mg.GetObjectKind().GroupVersionKind(), metrics.NameForManaged(mg))
 	logger := c.logger.WithValues("uid", mg.GetUID(), "name", mg.GetName(), "namespace", mg.GetNamespace(), "gvk", mg.GetObjectKind().GroupVersionKind().String())
 	logger.Debug("Connecting to the service provider")
+	setupCtx := ctx
+	if c.detachSetupContext {
+		setupCtx = context.WithoutCancel(ctx)
+	}
 	start := time.Now()
-	ts, err := c.getTerraformSetup(ctx, c.kube, mg)
+	ts, err := c.getTerraformSetup(setupCtx, c.kube, mg)
 	metrics.ExternalAPITime.WithLabelValues("connect").Observe(time.Since(start).Seconds())
 	if err != nil {
 		return nil, errors.Wrap(err, errGetTerraformSetup)

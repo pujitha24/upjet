@@ -46,6 +46,7 @@ func NewTerraformPluginSDKAsyncConnector(kube client.Client, ots *OperationTrack
 	nfac := &TerraformPluginSDKAsyncConnector{
 		TerraformPluginSDKConnector: NewTerraformPluginSDKConnector(kube, sf, cfg, ots),
 	}
+	nfac.detachSetupContext = true
 	for _, f := range opts {
 		f(nfac)
 	}

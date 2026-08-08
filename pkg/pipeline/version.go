@@ -66,8 +66,15 @@ func (vg *VersionGenerator) Package() *types.Package {
 
 // InsertPreviousObjects inserts into this VersionGenerator's package scope all
 // the type definitions from the previous versions of the managed resource APIs
-// found in the Go package.
+// found in the Go package. If this version's package has not been generated
+// yet on disk, this is a no-op.
 func (vg *VersionGenerator) InsertPreviousObjects(versions map[string]map[string]*config.Resource) error {
+	if _, err := os.Stat(vg.DirectoryPath); os.IsNotExist(err) {
+		// This version's package has not been generated yet, e.g., this is
+		// the first run of the code generation pipeline. There are no
+		// previously generated type definitions to insert in this case.
+		return nil
+	}
 	for _, resources := range versions {
 		for _, r := range resources {
 			for _, v := range r.PreviousVersions {
